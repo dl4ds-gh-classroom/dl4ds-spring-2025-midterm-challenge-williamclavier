@@ -22,11 +22,20 @@ class SimpleCNN(nn.Module):
     def __init__(self):
         super(SimpleCNN, self).__init__()
         # TODO - define the layers of the network you will use
-        ...
+        self.conv_layer1 = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.pool = nn.MaxPool2d(2,2)
+        self.full_con_layer1 = nn.Linear(32 * 16 * 16, 128)
+        self.dropout = nn.Dropout(0.5)
+        self.full_con_layer2 = nn.Linear(128, 100) # 100 output classes
     
     def forward(self, x):
         # TODO - define the forward pass of the network you will use
-        ...
+        x = F.relu(self.conv_layer1(x))
+        x = self.pool(x)
+        x = x.view(x.size(0), -1)
+        x = F.relu(self.full_con_layer1(x))
+        x = self.dropout(x)
+        x = self.full_con_layer2(x)
 
         return x
 
@@ -51,10 +60,14 @@ def train(epoch, model, trainloader, optimizer, criterion, CONFIG):
         inputs, labels = inputs.to(device), labels.to(device)
 
         ### TODO - Your code here
-        ...
+        optimizer.zero_grad()
+        output = model.forward(inputs)
+        loss = criterion(output, labels)
+        loss.backward()
+        optimizer.step()
 
-        running_loss += ...   ### TODO
-        _, predicted = ...    ### TODO
+        running_loss += loss   ### TODO
+        _, predicted = torch.max(output, 1)    ### TODO
 
         total += labels.size(0)
         correct += predicted.eq(labels).sum().item()
@@ -87,11 +100,11 @@ def validate(model, valloader, criterion, device):
             # move inputs and labels to the target device
             inputs, labels = inputs.to(device), labels.to(device)
 
-            outputs = ... ### TODO -- inference
-            loss = ...    ### TODO -- loss calculation
+            outputs = model(inputs) ### TODO -- inference
+            loss = criterion(outputs, labels)    ### TODO -- loss calculation
 
-            running_loss += ...  ### SOLUTION -- add loss from this sample
-            _, predicted = ...   ### SOLUTION -- predict the class
+            running_loss += loss.item() ### SOLUTION -- add loss from this sample
+            _, predicted = torch.max(outputs, 1)   ### SOLUTION -- predict the class
 
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
@@ -115,7 +128,7 @@ def main():
 
     CONFIG = {
         "model": "MyModel",   # Change name when using a different model
-        "batch_size": 8, # run batch size finder to find optimal batch size
+        "batch_size": 512, # run batch size finder to find optimal batch size
         "learning_rate": 0.1,
         "epochs": 5,  # Train for longer in a real scenario
         "num_workers": 4, # Adjust based on your system
@@ -144,7 +157,9 @@ def main():
     ###############
 
     # Validation and test transforms (NO augmentation)
-    transform_test = ...   ### TODO -- BEGIN SOLUTION
+    transform_test = transforms.Compose([
+        transforms.ToTensor() # No normalization
+    ])  ### TODO -- BEGIN SOLUTION
 
     ############################################################################
     #       Data Loading
@@ -152,24 +167,24 @@ def main():
 
     trainset = torchvision.datasets.CIFAR100(root='./data', train=True,
                                             download=True, transform=transform_train)
-
+    
     # Split train into train and validation (80/20 split)
-    train_size = ...   ### TODO -- Calculate training set size
-    val_size = ...     ### TODO -- Calculate validation set size
-    trainset, valset = ...  ### TODO -- split into training and validation sets
+    train_size = int(len(trainset) * 0.8) ### TODO -- Calculate training set size
+    val_size = len(trainset) - train_size    ### TODO -- Calculate validation set size
+    trainset, valset = torch.utils.data.random_split(trainset, [train_size, val_size], torch.Generator(device=CONFIG["device"]).manual_seed(CONFIG["seed"]))  # Split as well as set a manual seed so we get the same split each time
 
     ### TODO -- define loaders and test set
-    trainloader = ...
-    valloader = ...
+    trainloader = torch.utils.data.DataLoader(trainset, CONFIG["batch_size"], shuffle=True, num_workers=CONFIG["num_workers"])
+    valloader = torch.utils.data.DataLoader(valset, CONFIG["batch_size"], num_workers=CONFIG["num_workers"])
 
     # ... (Create validation and test loaders)
-    testset = ...
-    testloader = ...
+    testset = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=transform_test)
+    testloader = torch.utils.data.DataLoader(testset, CONFIG["batch_size"], num_workers=CONFIG["num_workers"])
     
     ############################################################################
     #   Instantiate model and move to target device
     ############################################################################
-    model = ...   # instantiate your model ### TODO
+    model = SimpleCNN()   # instantiate your model ### TODO
     model = model.to(CONFIG["device"])   # move it to target device
 
     print("\nModel summary:")
@@ -190,13 +205,15 @@ def main():
     ############################################################################
     # Loss Function, Optimizer and optional learning rate scheduler
     ############################################################################
-    criterion = ...   ### TODO -- define loss criterion
-    optimizer = ...   ### TODO -- define optimizer
-    scheduler = ...  # Add a scheduler   ### TODO -- you can optionally add a LR scheduler
+    criterion = nn.CrossEntropyLoss()   ### TODO -- define loss criterion
+    optimizer = torch.optim.Adam(model.parameters(), CONFIG["learning_rate"])   ### TODO -- define optimizer
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 
+                                              step_size=2,  # Decay LR every 2 epochs
+                                              gamma=0.1)    # Multiply LR by 0.1
 
 
     # Initialize wandb
-    wandb.init(project="-sp25-ds542-challenge", config=CONFIG)
+    wandb.init(project="sp25-ds542-challenge", config=CONFIG)
     wandb.watch(model)  # watch the model gradients
 
     ############################################################################
@@ -223,7 +240,11 @@ def main():
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), "best_model.pth")
-            wandb.save("best_model.pth") # Save to wandb as well
+            # wandb.save("best_model.pth") # Save to wandb as well
+            # Change to wandb.log_artifact()
+            artifact = wandb.Artifact('model', type='model')
+            artifact.add_file('best_model.pth')
+            wandb.log_artifact(artifact)
 
     wandb.finish()
 
