@@ -18,62 +18,17 @@ import json
 # for Part 3 you have the option of using a predefined, pretrained network to
 # finetune.
 ################################################################################
-class SimpleCNN(nn.Module):
-    def __init__(self):
-        super(SimpleCNN, self).__init__()
-        # I asked AI to help me come up with the shape because I scored so badly on the first few runs.
-        # Turned out the issue was actually not my model but rather the other code that tested and trained the model.
-        # Therefore I am still left with the AI inspired shape but it wasn't intentional to just only use this shape.
-        # First conv block
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(64)
-        
-        # Second conv block
-        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(128)
-        
-        # Third conv block
-        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(256)
-        
-        # Pooling
-        self.pool = nn.MaxPool2d(2, 2)
-        
-        # Dropout for regularization
-        self.dropout1 = nn.Dropout(0.25)
-        self.dropout2 = nn.Dropout(0.5)
-        
-        # Fully connected layers
-        self.fc1 = nn.Linear(256 * 4 * 4, 1024)
-        self.fc2 = nn.Linear(1024, 512)
-        self.fc3 = nn.Linear(512, 100)  # 100 classes
+def ResNet50():
+    # Load ResNet50 with no pretrained weights
+    model = torchvision.models.resnet50(weights=None)
+
+    # Modify the first conv layer for 32x32 images
+    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False) 
+    model.maxpool = nn.Identity()  # Remove maxpool as we have smaller images (Recommendation from AI)
+    num_ftrs = model.fc.in_features # Make the output have 100 features
+    model.fc = nn.Linear(num_ftrs, 100)
     
-    def forward(self, x):
-        # Same concept as above. Thought the shape was the issue so I asked for AI help but then that didn't work well so I figured
-        # it had to be something else.
-        # First conv block
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
-        x = self.dropout1(x)
-        
-        # Second conv block
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
-        x = self.dropout1(x)
-        
-        # Third conv block
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))
-        x = self.dropout1(x)
-        
-        # Flatten
-        x = x.view(-1, 256 * 4 * 4)
-        
-        # Fully connected layers
-        x = F.relu(self.fc1(x))
-        x = self.dropout2(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout2(x)
-        x = self.fc3(x)
-        
-        return x
+    return model
 
 ################################################################################
 # Define a one epoch training function
@@ -162,13 +117,13 @@ def main():
 
 
     CONFIG = {
-        "model": "MyModel",   # Change name when using a different model
-        "batch_size": 512, # run batch size finder to find optimal batch size
+        "model": "ResNet50",   # Updated model name
+        "batch_size": 128,     # Smaller batch size due to larger model
         "learning_rate": 0.001,
-        "epochs": 5,  # Train for longer in a real scenario
-        "num_workers": 4, # Adjust based on your system
+        "epochs": 30,          # Increased epochs for better training
+        "num_workers": 4,
         "device": "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu",
-        "data_dir": "./data",  # Make sure this directory exists
+        "data_dir": "./data",
         "ood_dir": "./data/ood-test",
         "wandb_project": "sp25-ds542-challenge",
         "seed": 42,
@@ -182,9 +137,12 @@ def main():
     #      Data Transformation (Example - You might want to modify) 
     ############################################################################
 
+    # Update transforms to match ResNet preprocessing
     transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4), # Crop the images
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)) # Using actual mean and standard deviation values from dataset
     ])
 
     ###############
@@ -194,7 +152,7 @@ def main():
     # Validation and test transforms (NO augmentation)
     transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)) # Using actual mean and standard deviation values from dataset
     ])
 
     ############################################################################
@@ -220,8 +178,8 @@ def main():
     ############################################################################
     #   Instantiate model and move to target device
     ############################################################################
-    model = SimpleCNN()   # instantiate your model ### TODO
-    model = model.to(CONFIG["device"])   # move it to target device
+    model = ResNet50()
+    model = model.to(CONFIG["device"])
 
     print("\nModel summary:")
     print(f"{model}\n")
@@ -241,11 +199,14 @@ def main():
     ############################################################################
     # Loss Function, Optimizer and optional learning rate scheduler
     ############################################################################
-    criterion = nn.CrossEntropyLoss()   ### TODO -- define loss criterion
-    optimizer = torch.optim.Adam(model.parameters(), CONFIG["learning_rate"])   ### TODO -- define optimizer
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 
-                                              step_size=2,  # Decay LR every 2 epochs
-                                              gamma=0.1)    # Multiply LR by 0.1
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), # Change to adamW to handle the adaptive learning rate better
+                                lr=CONFIG["learning_rate"],
+                                weight_decay=0.01)  # Added weight decay
+    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 
+                                                          T_max=CONFIG["epochs"],
+                                                          eta_min=1e-6)
 
 
     # Initialize wandb
@@ -277,7 +238,7 @@ def main():
             best_val_acc = val_acc
             torch.save(model.state_dict(), "best_model.pth")
             # wandb.save("best_model.pth") # Save to wandb as well
-            # Change to wandb.log_artifact() because it wasn't working before
+            # Change to wandb.log_artifact()
             artifact = wandb.Artifact('model', type='model')
             artifact.add_file('best_model.pth')
             wandb.log_artifact(artifact)
